@@ -29,6 +29,17 @@ sudo mv filescanner /usr/local/bin/
 filescanner [directory] [flags]
 ```
 
+## Or else
+
+Just run `./make` which contains:
+
+```bash
+#!/bin/bash
+set -e
+go build .
+sudo mv dstat /usr/local/bin/
+```
+
 If no directory is given, it defaults to `.` (current folder).
 
 ### Flags
