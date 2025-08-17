@@ -1,0 +1,254 @@
+package main
+
+import (
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+type Config struct {
+	Dir           string
+	Verbose       bool
+	NoBar         bool
+	ShowSize      bool
+	SizeOnly      bool
+	IncludeHidden bool
+	Human         bool
+	MinSize       int64
+	MaxSize       int64
+	Exclude       map[string]struct{}
+	BySize        bool
+}
+
+type FileStat struct {
+	Ext   string
+	Count int
+	Size  int64
+}
+
+func main() {
+	cfg, err := parseArgs(os.Args)
+	if err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	}
+
+	counts, sizeCounts, total, totalBytes, err := walkDir(cfg)
+	if err != nil {
+		fmt.Println("Error walking directory:", err)
+		os.Exit(1)
+	}
+
+	if cfg.SizeOnly {
+		fmt.Println(humanReadableSize(totalBytes))
+		return
+	}
+
+	if cfg.ShowSize {
+		fmt.Printf("Directory size: %s\n", humanReadableSize(totalBytes))
+	}
+
+	stats := aggregateStats(cfg, counts, sizeCounts, total, totalBytes)
+	printStats(cfg, stats, total, totalBytes)
+}
+
+func parseArgs(args []string) (Config, error) {
+	cfg := Config{
+		Dir:     ".",
+		Exclude: make(map[string]struct{}),
+	}
+
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--verbose":
+			cfg.Verbose = true
+		case "--debar":
+			cfg.NoBar = true
+		case "--size":
+			cfg.ShowSize = true
+		case "--sizeonly":
+			cfg.SizeOnly = true
+		case "--include-hidden":
+			cfg.IncludeHidden = true
+		case "--human":
+			cfg.Human = true
+		case "--minsize":
+			if i+1 >= len(args) {
+				return cfg, fmt.Errorf("--minsize requires a value")
+			}
+			i++
+			n, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil {
+				return cfg, fmt.Errorf("invalid --minsize value: %v", err)
+			}
+			cfg.MinSize = n
+		case "--maxsize":
+			if i+1 >= len(args) {
+				return cfg, fmt.Errorf("--maxsize requires a value")
+			}
+			i++
+			n, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil {
+				return cfg, fmt.Errorf("invalid --maxsize value: %v", err)
+			}
+			cfg.MaxSize = n
+		case "--exclude":
+			if i+1 >= len(args) {
+				return cfg, fmt.Errorf("--exclude requires a value")
+			}
+			i++
+			for _, ext := range strings.Split(args[i], ",") {
+				cfg.Exclude[strings.TrimSpace(ext)] = struct{}{}
+			}
+		case "--bysize":
+			cfg.BySize = true
+		default:
+			cfg.Dir = arg
+		}
+	}
+
+	return cfg, nil
+}
+
+func walkDir(cfg Config) (map[string]int, map[string]int64, int, int64, error) {
+	counts := make(map[string]int)
+	sizeCounts := make(map[string]int64)
+	var total int
+	var totalBytes int64
+
+	err := filepath.WalkDir(cfg.Dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			fmt.Println("Skipping", path, "due to error:", err)
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !cfg.IncludeHidden && strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			fmt.Println("Skipping", path, "due to error:", err)
+			return nil
+		}
+
+		if (cfg.MinSize > 0 && info.Size() < cfg.MinSize) || (cfg.MaxSize > 0 && info.Size() > cfg.MaxSize) {
+			return nil
+		}
+
+		totalBytes += info.Size()
+
+		ext := filepath.Ext(d.Name())
+		if ext == "" {
+			ext = "[noext]"
+		} else {
+			ext = ext[1:]
+		}
+
+		if _, skip := cfg.Exclude[ext]; skip {
+			return nil
+		}
+
+		counts[ext]++
+		sizeCounts[ext] += info.Size()
+		total++
+		return nil
+	})
+
+	return counts, sizeCounts, total, totalBytes, err
+}
+
+func aggregateStats(cfg Config, counts map[string]int, sizeCounts map[string]int64, total int, totalBytes int64) []FileStat {
+	stats := []FileStat{}
+
+	if cfg.BySize {
+		var other int64
+		for k, v := range sizeCounts {
+			percent := float64(v) / float64(totalBytes)
+			if !cfg.Verbose && percent < 0.01 {
+				other += v
+			} else {
+				stats = append(stats, FileStat{k, 0, v})
+			}
+		}
+		if other > 0 {
+			stats = append(stats, FileStat{"other", 0, other})
+		}
+		sort.Slice(stats, func(i, j int) bool {
+			return stats[i].Size > stats[j].Size
+		})
+	} else {
+		var other int
+		for k, v := range counts {
+			percent := float64(v) / float64(total)
+			if !cfg.Verbose && percent < 0.01 {
+				other += v
+			} else {
+				stats = append(stats, FileStat{k, v, 0})
+			}
+		}
+		if other > 0 {
+			stats = append(stats, FileStat{"other", other, 0})
+		}
+		sort.Slice(stats, func(i, j int) bool {
+			return stats[i].Count > stats[j].Count
+		})
+	}
+
+	return stats
+}
+
+func printStats(cfg Config, stats []FileStat, total int, totalBytes int64) {
+	barWidth := 40
+	if !cfg.NoBar {
+		fmt.Println("File type breakdown:")
+	}
+
+	for _, s := range stats {
+		var percent float64
+		if cfg.BySize {
+			percent = float64(s.Size) / float64(totalBytes) * 100
+		} else {
+			percent = float64(s.Count) / float64(total) * 100
+		}
+
+		if cfg.Human {
+			percent = float64(int(percent + 0.5))
+		}
+
+		if cfg.NoBar {
+			fmt.Printf("%-10s %5.0f%%\n", s.Ext, percent)
+		} else {
+			barLen := int(percent / 100 * float64(barWidth))
+			bar := strings.Repeat("█", barLen) + strings.Repeat("-", barWidth-barLen)
+			fmt.Printf("%-10s |%s| %5.2f%%\n", s.Ext, bar, percent)
+		}
+	}
+}
+
+func humanReadableSize(bytes int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+
+	switch {
+	case bytes >= GB:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/GB)
+	case bytes >= MB:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/MB)
+	case bytes >= KB:
+		return fmt.Sprintf("%.2f KB", float64(bytes)/KB)
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
+
