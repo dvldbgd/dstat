@@ -45,7 +45,7 @@ If no directory is given, it defaults to `.` (current folder).
 ### Flags
 
 - `--verbose` : Don’t collapse tiny percentages into "other".
-- `--debar` : No fancy bars, just percentages.
+- `--nobar` : No fancy bars, just percentages.
 - `--size` : Show total directory size.
 - `--sizeonly` : Only print the total size, nothing else.
 - `--include-hidden`: Include hidden files.
@@ -54,6 +54,7 @@ If no directory is given, it defaults to `.` (current folder).
 - `--maxsize <n>` : Only include files <= n bytes.
 - `--exclude <ext>`: Comma-separated list of extensions to ignore.
 - `--bysize` : Calculate percentages based on file sizes instead of counts.
+- `--help` : Lists all the flags and their functions
 
 ---
 

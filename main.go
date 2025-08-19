@@ -30,16 +30,38 @@ type FileStat struct {
 	Size  int64
 }
 
+var helpString = `
+Usage: file-stats [options] [directory]
+
+Options:
+    --verbose           Show all file types, including those <1%.
+    --nobar             Suppress bar chart output, print percentages only.
+    --size              Print total directory size.
+    --sizeonly          Only print directory size and exit.
+    --include-hidden    Include hidden files in stats.
+    --human             Round percentages to whole numbers.
+    --minsize <bytes>   Only include files >= this size.
+    --maxsize <bytes>   Only include files <= this size.
+    --exclude <exts>    Comma-separated list of extensions to exclude.
+    --bysize            Sort results by file size instead of count.
+    --help              Show this help.
+`
+
 func main() {
 	cfg, err := parseArgs(os.Args)
 	if err != nil {
-		fmt.Println("Error:", err)
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 
-	counts, sizeCounts, total, totalBytes, err := walkDir(cfg)
+	if cfg == nil {
+		// help was requested, exit cleanly
+		os.Exit(0)
+	}
+
+	counts, sizeCounts, total, totalBytes, err := walkDir(*cfg)
 	if err != nil {
-		fmt.Println("Error walking directory:", err)
+		fmt.Fprintln(os.Stderr, "Error walking directory:", err)
 		os.Exit(1)
 	}
 
@@ -52,12 +74,17 @@ func main() {
 		fmt.Printf("Directory size: %s\n", humanReadableSize(totalBytes))
 	}
 
-	stats := aggregateStats(cfg, counts, sizeCounts, total, totalBytes)
-	printStats(cfg, stats, total, totalBytes)
+	if total == 0 && totalBytes == 0 {
+		fmt.Println("No files matched criteria.")
+		return
+	}
+
+	stats := aggregateStats(*cfg, counts, sizeCounts, total, totalBytes)
+	printStats(*cfg, stats, total, totalBytes)
 }
 
-func parseArgs(args []string) (Config, error) {
-	cfg := Config{
+func parseArgs(args []string) (*Config, error) {
+	cfg := &Config{
 		Dir:     ".",
 		Exclude: make(map[string]struct{}),
 	}
@@ -67,7 +94,7 @@ func parseArgs(args []string) (Config, error) {
 		switch arg {
 		case "--verbose":
 			cfg.Verbose = true
-		case "--debar":
+		case "--nobar":
 			cfg.NoBar = true
 		case "--size":
 			cfg.ShowSize = true
@@ -79,34 +106,37 @@ func parseArgs(args []string) (Config, error) {
 			cfg.Human = true
 		case "--minsize":
 			if i+1 >= len(args) {
-				return cfg, fmt.Errorf("--minsize requires a value")
+				return nil, fmt.Errorf("--minsize requires a value")
 			}
 			i++
 			n, err := strconv.ParseInt(args[i], 10, 64)
 			if err != nil {
-				return cfg, fmt.Errorf("invalid --minsize value: %v", err)
+				return nil, fmt.Errorf("invalid --minsize value: %v", err)
 			}
 			cfg.MinSize = n
 		case "--maxsize":
 			if i+1 >= len(args) {
-				return cfg, fmt.Errorf("--maxsize requires a value")
+				return nil, fmt.Errorf("--maxsize requires a value")
 			}
 			i++
 			n, err := strconv.ParseInt(args[i], 10, 64)
 			if err != nil {
-				return cfg, fmt.Errorf("invalid --maxsize value: %v", err)
+				return nil, fmt.Errorf("invalid --maxsize value: %v", err)
 			}
 			cfg.MaxSize = n
 		case "--exclude":
 			if i+1 >= len(args) {
-				return cfg, fmt.Errorf("--exclude requires a value")
+				return nil, fmt.Errorf("--exclude requires a value")
 			}
 			i++
 			for _, ext := range strings.Split(args[i], ",") {
-				cfg.Exclude[strings.TrimSpace(ext)] = struct{}{}
+				cfg.Exclude[strings.TrimPrefix(strings.TrimSpace(ext), ".")] = struct{}{}
 			}
 		case "--bysize":
 			cfg.BySize = true
+		case "--help":
+			fmt.Println(helpString)
+			return nil, nil
 		default:
 			cfg.Dir = arg
 		}
@@ -123,7 +153,7 @@ func walkDir(cfg Config) (map[string]int, map[string]int64, int, int64, error) {
 
 	err := filepath.WalkDir(cfg.Dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			fmt.Println("Skipping", path, "due to error:", err)
+			fmt.Fprintln(os.Stderr, "Skipping", path, "due to error:", err)
 			return nil
 		}
 		if d.IsDir() {
@@ -135,7 +165,7 @@ func walkDir(cfg Config) (map[string]int, map[string]int64, int, int64, error) {
 
 		info, err := d.Info()
 		if err != nil {
-			fmt.Println("Skipping", path, "due to error:", err)
+			fmt.Fprintln(os.Stderr, "Skipping", path, "due to error:", err)
 			return nil
 		}
 
@@ -143,19 +173,18 @@ func walkDir(cfg Config) (map[string]int, map[string]int64, int, int64, error) {
 			return nil
 		}
 
-		totalBytes += info.Size()
-
 		ext := filepath.Ext(d.Name())
 		if ext == "" {
 			ext = "[noext]"
 		} else {
-			ext = ext[1:]
+			ext = strings.TrimPrefix(ext, ".")
 		}
 
 		if _, skip := cfg.Exclude[ext]; skip {
 			return nil
 		}
 
+		totalBytes += info.Size()
 		counts[ext]++
 		sizeCounts[ext] += info.Size()
 		total++
@@ -171,7 +200,7 @@ func aggregateStats(cfg Config, counts map[string]int, sizeCounts map[string]int
 	if cfg.BySize {
 		var other int64
 		for k, v := range sizeCounts {
-			percent := float64(v) / float64(totalBytes)
+			percent := safeDivF(float64(v), float64(totalBytes))
 			if !cfg.Verbose && percent < 0.01 {
 				other += v
 			} else {
@@ -187,7 +216,7 @@ func aggregateStats(cfg Config, counts map[string]int, sizeCounts map[string]int
 	} else {
 		var other int
 		for k, v := range counts {
-			percent := float64(v) / float64(total)
+			percent := safeDivF(float64(v), float64(total))
 			if !cfg.Verbose && percent < 0.01 {
 				other += v
 			} else {
@@ -214,9 +243,9 @@ func printStats(cfg Config, stats []FileStat, total int, totalBytes int64) {
 	for _, s := range stats {
 		var percent float64
 		if cfg.BySize {
-			percent = float64(s.Size) / float64(totalBytes) * 100
+			percent = safeDivF(float64(s.Size), float64(totalBytes)) * 100
 		} else {
-			percent = float64(s.Count) / float64(total) * 100
+			percent = safeDivF(float64(s.Count), float64(total)) * 100
 		}
 
 		if cfg.Human {
@@ -238,9 +267,12 @@ func humanReadableSize(bytes int64) string {
 		KB = 1024
 		MB = 1024 * KB
 		GB = 1024 * MB
+		TB = 1024 * GB
 	)
 
 	switch {
+	case bytes >= TB:
+		return fmt.Sprintf("%.2f TB", float64(bytes)/TB)
 	case bytes >= GB:
 		return fmt.Sprintf("%.2f GB", float64(bytes)/GB)
 	case bytes >= MB:
@@ -250,5 +282,12 @@ func humanReadableSize(bytes int64) string {
 	default:
 		return fmt.Sprintf("%d B", bytes)
 	}
+}
+
+func safeDivF(a, b float64) float64 {
+	if b == 0 {
+		return 0
+	}
+	return a / b
 }
 
