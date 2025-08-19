@@ -52,7 +52,8 @@ If no directory is given, it defaults to `.` (current folder).
 - `--human` : Round percentages to whole numbers.
 - `--minsize <n>` : Only include files >= n bytes.
 - `--maxsize <n>` : Only include files <= n bytes.
-- `--exclude <ext>`: Comma-separated list of extensions to ignore.
+- `--exclude <ext>` : Comma-separated list of extensions to ignore.
+- `--excludedir <dir>` : Comma-separated list of directories to ignore.
 - `--bysize` : Calculate percentages based on file sizes instead of counts.
 - `--help` : Lists all the flags and their functions
 
@@ -61,7 +62,7 @@ If no directory is given, it defaults to `.` (current folder).
 ### Example
 
 ```bash
-filescanner ~/projects --size --bysize --human
+filescanner ~/projects --size --bysize --human --excludedir .git,node_modules
 ```
 
 That’s it. Run it, ignore it, modify it, whatever.

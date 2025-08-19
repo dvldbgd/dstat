@@ -10,6 +10,8 @@ import (
 	"strings"
 )
 
+// Config holds command-line options
+// Controls which directory is scanned and how results are filtered/shown
 type Config struct {
 	Dir           string
 	Verbose       bool
@@ -21,15 +23,19 @@ type Config struct {
 	MinSize       int64
 	MaxSize       int64
 	Exclude       map[string]struct{}
+	ExcludeDirs   map[string]struct{}
 	BySize        bool
 }
 
+// FileStat stores aggregated file statistics for an extension
+// Ext = file extension, Count = number of files, Size = cumulative bytes
 type FileStat struct {
 	Ext   string
 	Count int
 	Size  int64
 }
 
+// help string for CLI usage
 var helpString = `
 Usage: file-stats [options] [directory]
 
@@ -43,6 +49,7 @@ Options:
     --minsize <bytes>   Only include files >= this size.
     --maxsize <bytes>   Only include files <= this size.
     --exclude <exts>    Comma-separated list of extensions to exclude.
+    --excludedir <dirs> Comma-separated list of directory names to exclude.
     --bysize            Sort results by file size instead of count.
     --help              Show this help.
 `
@@ -55,7 +62,7 @@ func main() {
 	}
 
 	if cfg == nil {
-		// help was requested, exit cleanly
+		// --help requested, exit cleanly
 		os.Exit(0)
 	}
 
@@ -83,14 +90,50 @@ func main() {
 	printStats(*cfg, stats, total, totalBytes)
 }
 
+// parseArgs converts command-line args into a Config struct
+// Supports both "--flag value" and "--flag=value" forms
 func parseArgs(args []string) (*Config, error) {
 	cfg := &Config{
-		Dir:     ".",
-		Exclude: make(map[string]struct{}),
+		Dir:         ".",
+		Exclude:     make(map[string]struct{}),
+		ExcludeDirs: make(map[string]struct{}),
 	}
 
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
+
+		// Support --key=value form
+		if strings.Contains(arg, "=") {
+			parts := strings.SplitN(arg, "=", 2)
+			key := parts[0]
+			val := parts[1]
+			switch key {
+			case "--exclude":
+				for _, ext := range strings.Split(val, ",") {
+					cfg.Exclude[strings.TrimPrefix(strings.TrimSpace(ext), ".")] = struct{}{}
+				}
+			case "--excludedir":
+				for _, dir := range strings.Split(val, ",") {
+					cfg.ExcludeDirs[strings.TrimSpace(dir)] = struct{}{}
+				}
+			case "--minsize":
+				n, err := strconv.ParseInt(val, 10, 64)
+				if err != nil {
+					return nil, fmt.Errorf("invalid --minsize value: %v", err)
+				}
+				cfg.MinSize = n
+			case "--maxsize":
+				n, err := strconv.ParseInt(val, 10, 64)
+				if err != nil {
+					return nil, fmt.Errorf("invalid --maxsize value: %v", err)
+				}
+				cfg.MaxSize = n
+			default:
+				// ignore unknown --key=value
+			}
+			continue
+		}
+
 		switch arg {
 		case "--verbose":
 			cfg.Verbose = true
@@ -132,6 +175,14 @@ func parseArgs(args []string) (*Config, error) {
 			for _, ext := range strings.Split(args[i], ",") {
 				cfg.Exclude[strings.TrimPrefix(strings.TrimSpace(ext), ".")] = struct{}{}
 			}
+		case "--excludedir":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("--excludedir requires a value")
+			}
+			i++
+			for _, dir := range strings.Split(args[i], ",") {
+				cfg.ExcludeDirs[strings.TrimSpace(dir)] = struct{}{}
+			}
 		case "--bysize":
 			cfg.BySize = true
 		case "--help":
@@ -145,6 +196,8 @@ func parseArgs(args []string) (*Config, error) {
 	return cfg, nil
 }
 
+// walkDir scans the directory recursively and counts files by extension
+// Applies filters for hidden files, min/max size, and excluded extensions/dirs
 func walkDir(cfg Config) (map[string]int, map[string]int64, int, int64, error) {
 	counts := make(map[string]int)
 	sizeCounts := make(map[string]int64)
@@ -157,6 +210,9 @@ func walkDir(cfg Config) (map[string]int, map[string]int64, int, int64, error) {
 			return nil
 		}
 		if d.IsDir() {
+			if _, skip := cfg.ExcludeDirs[d.Name()]; skip {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !cfg.IncludeHidden && strings.HasPrefix(d.Name(), ".") {
@@ -194,6 +250,8 @@ func walkDir(cfg Config) (map[string]int, map[string]int64, int, int64, error) {
 	return counts, sizeCounts, total, totalBytes, err
 }
 
+// aggregateStats groups small categories into "other" unless --verbose is set
+// Sorts results by count or by size depending on cfg.BySize
 func aggregateStats(cfg Config, counts map[string]int, sizeCounts map[string]int64, total int, totalBytes int64) []FileStat {
 	stats := []FileStat{}
 
@@ -234,6 +292,7 @@ func aggregateStats(cfg Config, counts map[string]int, sizeCounts map[string]int
 	return stats
 }
 
+// printStats displays the results with ASCII bar chart unless --nobar is set
 func printStats(cfg Config, stats []FileStat, total int, totalBytes int64) {
 	barWidth := 40
 	if !cfg.NoBar {
@@ -262,6 +321,7 @@ func printStats(cfg Config, stats []FileStat, total int, totalBytes int64) {
 	}
 }
 
+// humanReadableSize formats a byte count into KB/MB/GB/TB string
 func humanReadableSize(bytes int64) string {
 	const (
 		KB = 1024
@@ -284,6 +344,7 @@ func humanReadableSize(bytes int64) string {
 	}
 }
 
+// safeDivF does floating point division with zero check
 func safeDivF(a, b float64) float64 {
 	if b == 0 {
 		return 0
