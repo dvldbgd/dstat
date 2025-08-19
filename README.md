@@ -31,7 +31,7 @@ filescanner [directory] [flags]
 
 ## Or else
 
-Just run `./make` which contains:
+Just run `./make` (unix-like only for now) which contains:
 
 ```bash
 #!/bin/bash
